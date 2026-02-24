@@ -1,0 +1,117 @@
+#! /bin/sh
+#***************************************
+#* azure_script.sh   *
+#***************************************
+
+#変数定義
+AZ_CLI=/usr/bin/az
+GROUP=k-n
+VMSTOP='"VM running"`
+STOP_LOOP_MAX=240
+STOP_LOOP_COUN=0
+CHECK LOOP_COUNT=0
+CLP_SERVER_DOWN=
+
+
+
+#環境変数読み込み
+# load ZCCustom enviroment file
+MY_PROG_NAME=`basename ${0}`
+if [[ -f /sli/bin/ZCCustomEnvironment.sh ]]
+then
+  . /sli/bin/ZCCustomEnvironment.sh
+else
+  echo "(File Not Found Error): ZCCustomEnvironment script is not found !!"
+  exit 99
+fi
+
+# 障害ログ出力シェル
+SHOGAI_API=${SYLX_SL_BIN_DIR}/ZMHZSendError.sh
+
+# CLUSTERPRO はスクリプトを実行する場合に、定期チェックか強制停止かの条件分岐する
+# 0 : 定期チェック時
+if [ "${CLP_FORCESTOP_MODE}" = 0 ]; then
+
+  SERVER_NAME=`uname -n`
+  /usr/bin/az vm list -g ${GROUP} -d --query [?tags.Name==${SERVER_NAME}] --output table 
+  ret=$?
+  if [ ${ret} -ne 0 ]; then
+  ${SHOGAI_API} ${MY_PROG_NAME} 2 2 NCA0100 ""
+  exit ${ABNORMAL_END}
+  fi
+
+
+#1 : 強制停止実行時
+elif [ "${CLP_FORCESTOP_MODE}" = 1 ]; then
+  ${SHOGAI_API} ${MY_PROG_NAME} 2 2 NCA0101 ""
+
+
+
+  #処理が開始
+  ${SHOGAI_API} ${MY_PROG_NAME} 2 2 NCA0001 ""
+  # 強制停止用定義ファイル読込み
+  export CONFIG_FILE=${SYLX_SL_COFC_DIR}/ZCSYLXClusterForceStop_Azure.ini
+  if [ -f ${CONFIG_FILE} ];then
+    . ${CONFIG_FILE} > /dev/null 2>&1
+  else
+
+    #強制停止用定義ファイルの読み込みに失敗しました。
+    ${SHOGAI_API} ${MY_PROG_NAME} 2 2 NCA0003 ""
+    exit ${ABNORMAL_END}
+  fi
+
+
+# シャットダウン要求
+# リターンコードの値に基づき、シャットダウン要求が応答したかどうかを判定
+# STOP_LOOP_MAXを超えた場合、次の処理へ移行
+  while [ ${STOP_LOOP_COUNT} -lt ${STOP_LOOP_MAX} ]
+  do
+   (${AZ_CLI} vm stop -g ${GROUP} --name ${CLP_SERVER_DOWN}) > /dev/null 2>&1
+    ret=$?
+    if [ ${ret} -eq 0 ]; then
+
+      break
+    fi
+    sleep 1
+    let STOP_LOOP_COUNT=${STOP_LOOP_COUNT}+1
+  done
+
+  if [ ${ret} -ne 0 ]; then
+    ${SHOGAI_API} ${MY_PROG_NAME} 2 2 NCA0104 ""
+    exit ${ABNORMAL_END}
+  fi
+
+
+# サーバーダウン確認
+# サーバーの停止を確認できなくても、
+# CHECK_LOOP_MAXを超えた場合は停止が失敗したとして処理を終了する
+  while [ ${CHECK_LOOP_COUNT} -lt ${CHECK_LOOP_MAX} ]
+  do
+    VMSTATE=`${AZ_CLI} vm show --resource-group ${GROUP} --name ${CLP_SERVER_DOWN} --show details --query powerstate` > /dev/null 2>&1
+    ret=$?
+    if [ "$VMSTATE" = "$VMATOP" ]; then
+      break
+    fi
+    sleep 1
+    let CHECK_LOOP_COUNT=${CHECK_LOOP_COUNT}+1
+  done
+
+
+  if [ "$VMSTATE" != "$VMSTOP" ]; then
+    ${SHOGAI_API} ${MY_PROG_NAME} 2 2 NCA0105 ""
+    exit ${ABNORMAL_END}
+  fi
+
+  ${SHOGAI_API} ${MY_PROG_NAME} 2 2 NCA0002 ""
+else
+
+#その他
+#定期チェックと強制停止以外
+  ${SHOGAI_API} ${MY_PROG_NAME} 2 2 NCA0106 ""
+  exit ${ABNORMAL_END}
+fi
+
+
+
+#正常終了
+exit ${NORMAL_END}
